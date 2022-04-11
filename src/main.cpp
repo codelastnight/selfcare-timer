@@ -3,182 +3,16 @@
 #include "encoder.h"
 #include "sprite.h"
 
-#define BACKGROUND BLACK
-#define MARK_COLOR WHITE
-#define SUBMARK_COLOR DARKGREY // LIGHTGREY
-#define HOUR_COLOR WHITE
-#define MINUTE_COLOR BLUE // LIGHTGREY
-#define SECOND_COLOR RED
 
-
-
-
-
-static int16_t w, h, center;
-static int16_t hHandLen, mHandLen, sHandLen, markLen;
-static float sdeg, mdeg, hdeg;
 static int16_t osx = 0, osy = 0, omx = 0, omy = 0, ohx = 0, ohy = 0; // Saved H, M, S x & y coords
 static int16_t nsx, nsy, nmx, nmy, nhx, nhy;                         // H, M, S x & y coords
 static int16_t xMin, yMin, xMax, yMax;                               // redraw range
 static int16_t hh, mm, ss;
 static unsigned long targetTime; // next action time
 
-static int16_t *cached_points;
-static uint16_t cached_points_idx = 0;
-static int16_t *last_cached_point;
+
 static int16_t oldDeg;
-static uint8_t conv2d(const char *p)
-{
-    uint8_t v = 0;
-    return (10 * (*p - '0')) + (*++p - '0');
-}
 
-
-
-void write_cache_pixel(int16_t x, int16_t y, int16_t color, bool cross_check_second, bool cross_check_hour)
-{
-    int16_t *cache = cached_points;
-    if (cross_check_second)
-    {
-        for (uint16_t i = 0; i <= sHandLen; i++)
-        {
-            if ((x == *(cache++)) && (y == *(cache)))
-            {
-                return;
-            }
-            cache++;
-        }
-    }
-    if (cross_check_hour)
-    {
-        cache = cached_points + ((sHandLen + 1) * 2);
-        for (uint16_t i = 0; i <= hHandLen; i++)
-        {
-            if ((x == *(cache++)) && (y == *(cache)))
-            {
-                return;
-            }
-            cache++;
-        }
-    }
-    gfx->writePixel(x, y, color);
-    gfx->writePixel(x+1, y, color);
-
-};
-
-void draw_round_clock_mark(int16_t innerR1, int16_t outerR1, int16_t innerR2, int16_t outerR2, int16_t innerR3, int16_t outerR3)
-{
-  float x, y;
-  int16_t x0, x1, y0, y1, innerR, outerR;
-  uint16_t c;
-
-  for (uint8_t i = 0; i < 60; i++)
-  {
-    if ((i % 15) == 0)
-    {
-      innerR = innerR1;
-      outerR = outerR1;
-      c = MARK_COLOR;
-    }
-    else if ((i % 5) == 0)
-    {
-      innerR = innerR2;
-      outerR = outerR2;
-      c = MARK_COLOR;
-    }
-    else
-    {
-      innerR = innerR3;
-      outerR = outerR3;
-      c = SUBMARK_COLOR;
-    }
-
-    mdeg = (SIXTIETH_RADIAN * i) - RIGHT_ANGLE_RADIAN;
-    x = cos(mdeg);
-    y = sin(mdeg);
-    x0 = x * outerR + center;
-    y0 = y * outerR + center;
-    x1 = x * innerR + center;
-    y1 = y * innerR + center;
-
-    gfx->drawLine(x0, y0, x1, y1, c);
-  }
-}
-
-
-
-void draw_and_erase_cached_line(int16_t x0, int16_t y0, int16_t x1, int16_t y1, int16_t color, int16_t *cache, int16_t cache_len, bool cross_check_second, bool cross_check_hour)
-{
-#if defined(ESP8266)
-    yield();
-#endif
-    bool steep = _diff(y1, y0) > _diff(x1, x0);
-    if (steep)
-    {
-        _swap_int16_t(x0, y0);
-        _swap_int16_t(x1, y1);
-    }
-
-    int16_t dx, dy;
-    dx = _diff(x1, x0);
-    dy = _diff(y1, y0);
-
-    int16_t err = dx / 2;
-    int8_t xstep = (x0 < x1) ? 1 : -1;
-    int8_t ystep = (y0 < y1) ? 1 : -1;
-    x1 += xstep;
-    int16_t x, y, ox, oy;
-    for (uint16_t i = 0; i <= dx; i++)
-    {
-        if (steep)
-        {
-            x = y0;
-            y = x0;
-        }
-        else
-        {
-            x = x0;
-            y = y0;
-        }
-        ox = *(cache + (i * 2));
-        oy = *(cache + (i * 2) + 1);
-        if ((x == ox) && (y == oy))
-        {
-            if (cross_check_second || cross_check_hour)
-            {
-                write_cache_pixel(x, y, color, cross_check_second, cross_check_hour);
-            }
-        }
-        else
-        {
-            write_cache_pixel(x, y, color, cross_check_second, cross_check_hour);
-            if ((ox > 0) || (oy > 0))
-            {
-                write_cache_pixel(ox, oy, BACKGROUND, cross_check_second, cross_check_hour);
-            }
-            *(cache + (i * 2)) = x;
-            *(cache + (i * 2) + 1) = y;
-        }
-        if (err < dy)
-        {
-            y0 += ystep;
-            err += dx;
-        }
-        err -= dy;
-        x0 += xstep;
-    }
-    for (uint16_t i = dx + 1; i < cache_len; i++)
-    {
-        ox = *(cache + (i * 2));
-        oy = *(cache + (i * 2) + 1);
-        if ((ox > 0) || (oy > 0))
-        {
-            write_cache_pixel(ox, oy, BACKGROUND, cross_check_second, cross_check_hour);
-        }
-        *(cache + (i * 2)) = 0;
-        *(cache + (i * 2) + 1) = 0;
-    }
-}
 void redraw_hands_cached_draw_and_erase()
 {
     gfx->startWrite();
@@ -296,21 +130,24 @@ void loop()
 
     // did we move arounde?
     if (encoder_position > new_position) {
-        
+
         gfx->setCursor(50, 50);
         gfx->setTextColor(WHITE,BLACK);
         if (new_position < 0) new_position = 0;
 
         if (new_position<10 && new_position > -1) gfx->print( "0");
         gfx->println( new_position);
-        //int16_t deg = map(new_position,0,200,0,359) ;
-        //int16_t diff = abs(deg - oldDeg);
-        //gfx->fillArc(center,center,center - markLen, center, deg,deg + diff,WHITE);
+        // int16_t deg = map(new_position,0,200,0,359) ;
+        // int16_t diff = abs(deg - oldDeg);
+        // gfx->startWrite();
 
-        //gfx->fillArc(center,center,center - markLen, center, oldDeg,oldDeg +diff, BLACK);
-        // change the neopixel color
-        //oldDeg = deg;
-        encoder_position = new_position;      // and save for next round
+        // gfx->fillArc(center,center,center - markLen, center, deg,deg + diff,WHITE);
+
+        // gfx->fillArc(center,center,center - markLen, center, oldDeg,oldDeg +diff, BLACK);
+        // oldDeg = deg;
+        // encoder_position = new_position;      // and save for next round
+        // gfx->endWrite();
+
     } else if (encoder_position < new_position) {
         gfx->setCursor(50, 50);
         gfx->setTextColor(WHITE,BLACK);
@@ -318,14 +155,17 @@ void loop()
 
         if (new_position<10 && new_position > -1) gfx->print( "0");
 
-        gfx->println( new_position);
-        //int16_t deg = map(new_position,0,200,0,359) ;
-        //int16_t diff = abs(deg - oldDeg);
+         gfx->println( new_position);
+    //     int16_t deg = map(new_position,0,200,0,359) ;
+    //     int16_t diff = abs(deg - oldDeg);
+    //     gfx->startWrite();
 
-       //gfx->fillArc(center,center,center - markLen, center, oldDeg- diff,oldDeg ,BLACK);
-        //gfx->fillArc(center,center,center - markLen, center,deg - diff,deg ,WHITE);
-        //oldDeg = deg;
-        encoder_position = new_position; 
+    //    gfx->fillArc(center,center,center - markLen, center, oldDeg- diff,oldDeg ,BLACK);
+    //     gfx->fillArc(center,center,center - markLen, center,deg - diff,deg ,WHITE);
+    //             gfx->endWrite();
+
+    //     oldDeg = deg;
+    //     encoder_position = new_position; 
     }
 
 }
