@@ -2,28 +2,51 @@
 
 #include "encoder.h"
 #include "sprite.h"
+#include <AsyncTimer.h>
 
 
-static int16_t osx = 0, osy = 0, omx = 0, omy = 0, ohx = 0, ohy = 0; // Saved H, M, S x & y coords
-static int16_t nsx, nsy, nmx, nmy, nhx, nhy;                         // H, M, S x & y coords
-static int16_t xMin, yMin, xMax, yMax;                               // redraw range
-static int16_t hh, mm, ss;
-static unsigned long targetTime; // next action time
+#define degreesToRadians(angleDegrees) (angleDegrees * M_PI / 180.0)
+#define MAXTIME 600 // in ms
+AsyncTimer t;
 
 
-static int16_t oldDeg;
+bool isRunning = false;
+static uint32_t ostart,oend;
+bool isPressed = false;
+static float timer = 0;
 
-void redraw_hands_cached_draw_and_erase()
-{
-    gfx->startWrite();
-    draw_and_erase_cached_line(center, center, nsx, nsy, SECOND_COLOR, cached_points, sHandLen + 1, false, false);
+void setcircle(int32_t angle, bool reverse = false) {
+    float start, end;
+   
+    uint16_t color ;
+    if (reverse) {
+        color= BACKGROUND;
+        start = angle + 177.0;
+        end = angle + 181.0;
+    } else {
+        color= WHITE;
 
-    draw_and_erase_cached_line(center, center, nhx, nhy, HOUR_COLOR, cached_points + ((sHandLen + 1) * 2), hHandLen + 1, true, false);
-    draw_and_erase_cached_line(center, center, nmx, nmy, MINUTE_COLOR, cached_points + ((sHandLen + 1 + hHandLen + 1) * 2), mHandLen + 1, true, true);
-    gfx->endWrite();
+        start = angle + 179.0 ;
+        end = angle + 184.0;
+    }
+  
+    gfx->fillArc(center,center,100,102,ostart,oend,color);
+
+    ostart = start;
+    oend = end;
 }
 
+void renderClock(int16_t ms) {
+    int16_t hh, mm, ss;
 
+    ss = ms / 10;
+    mm = ms *100/ 60;
+    gfx->setCursor(50, center);
+    gfx->setTextSize(4);
+    if (ss < 10)  gfx->print("0");
+    if (ss < 100)  gfx->print("0");
+    gfx->print(ss);
+}
 void setup(void)
 {
     ss_init ();
@@ -50,7 +73,6 @@ void setup(void)
     mHandLen = center * 2 / 3;
     sHandLen = center * 5 / 6;
     markLen = sHandLen / 6;
-    cached_points = (int16_t *)malloc((hHandLen + 1 + mHandLen + 1 + sHandLen + 1) * 2 * 2);
 
     // Draw 60 clock marks
     draw_round_clock_mark(
@@ -59,113 +81,118 @@ void setup(void)
         center - (markLen * 2 / 3), center,
         center - (markLen / 2), center);
 
-    hh = conv2d(__TIME__);
-    mm = conv2d(__TIME__ + 3);
-    ss = conv2d(__TIME__ + 6);
-
-    targetTime = ((millis() / 1000) + 1) * 1000;
     
+    gfx->setTextColor(WHITE,BACKGROUND);
+    
+
 }
 
 void loop()
 {
+    t.handle();
+    //run every sec
+    t.setInterval([]() {
+        
+        if (isRunning) {
+            //run timer
+            gfx->startWrite();
+            renderClock(timer);
+           
+            gfx->endWrite();
 
- 
-    unsigned long cur_millis = millis();
-    if (cur_millis >= targetTime)
-    {
-        targetTime += 1000;
-        ss++; // Advance second
-        if (ss == 60)
-        {
-            ss = 0;
-            mm++; // Advance minute
-            if (mm > 59)
-            {
-                mm = 0;
-                hh++; // Advance hour
-                if (hh > 23)
-                {
-                    hh = 0;
-                }
-            }
         }
+          
+    }, 1000);
+
+    
+    //run every ms
+    t.setInterval([]() {
+        if (isRunning) {
+            timer--;
+            float timems = map(timer,0,MAXTIME,0,360);
+            gfx->startWrite();
+
+            setcircle(timems, true);
+           
+            gfx->endWrite();
+
+            if (timer <= 0) {
+                ssw.setEncoderPosition(0);
+                gfx->fillRect(50,center,7000,70,BACKGROUND);
+                timer = 0;
+                gfx->fillArc(center,center,100,102,0,360,BACKGROUND);
+                isRunning = false;
+            }
+
+        } else {
+            int32_t new_position = ssw.getEncoderPosition();
+
+            if (encoder_position > new_position) {
+                if (new_position > 0) {
+                    new_position = 0;
+                    ssw.setEncoderPosition(0);
+
+                } 
+                float timems = map(-new_position,0,360,0,MAXTIME);
+
+                gfx->startWrite();
+                renderClock(timems);
+              
+                setcircle(-new_position, false);
+                gfx->endWrite();
+            
+                encoder_position = new_position;      // and save for next round
+
+            } else if (encoder_position < new_position) {
+                if (new_position < -360) {
+                    new_position = -360;
+                    ssw.setEncoderPosition(-360);
+
+                }
+                float timems = map(-new_position,0,360,0,MAXTIME);
+
+                gfx->startWrite();
+                setcircle(-new_position,true);
+                renderClock(timems);
+
+                gfx->endWrite();
+            
+                
+                encoder_position = new_position;      // and save for next round
+            }
+
+        }
+        
+     
+
+
+    }, 100);
+
+    //reset?
+    if (! ssw.digitalRead(SS_SWITCH) && !isPressed) {
+        //start if not running
+        if (!isRunning) {
+            if (encoder_position != 0) {
+               
+                timer = map(-encoder_position,0,360,0,MAXTIME);
+                isRunning = true;
+            }
+           
+        } else {
+            // else reset timer
+            ssw.setEncoderPosition(0);
+            gfx->fillRect(50,center,7000,70,BACKGROUND);
+            timer = 0;
+            gfx->fillArc(center,center,100,102,0,360,BACKGROUND);
+            isRunning = false;
+        }
+        isPressed = true;
+
+
+    } else if (ssw.digitalRead(SS_SWITCH) && isPressed) {
+        isPressed = false;
     }
 
-    // Pre-compute hand degrees, x & y coords for a fast screen update
-    sdeg = SIXTIETH_RADIAN * ((0.001 * (cur_millis % 1000)) + ss); // 0-59 (includes millis)
-    nsx = cos(sdeg - RIGHT_ANGLE_RADIAN) * sHandLen + center;
-    nsy = sin(sdeg - RIGHT_ANGLE_RADIAN) * sHandLen + center;
-    if ((nsx != osx) || (nsy != osy))
-    {
-        mdeg = (SIXTIETH * sdeg) + (SIXTIETH_RADIAN * mm); // 0-59 (includes seconds)
-        hdeg = (TWELFTH * mdeg) + (TWELFTH_RADIAN * hh);   // 0-11 (includes minutes)
-        mdeg -= RIGHT_ANGLE_RADIAN;
-        hdeg -= RIGHT_ANGLE_RADIAN;
-        nmx = cos(mdeg) * mHandLen + center;
-        nmy = sin(mdeg) * mHandLen + center;
-        nhx = cos(hdeg) * hHandLen + center;
-        nhy = sin(hdeg) * hHandLen + center;
-
-        // redraw hands
-        redraw_hands_cached_draw_and_erase();
-
-        ohx = nhx;
-        ohy = nhy;
-        omx = nmx;
-        omy = nmy;
-        osx = nsx;
-        osy = nsy;
-
-        delay(1);
-    }
-
-    if (! ssw.digitalRead(SS_SWITCH)) {
-        ssw.setEncoderPosition(0);
-        gfx->fillRect(50,50,50,10,BACKGROUND);
-        oldDeg = 0;
-    }
-
-    int32_t new_position = ssw.getEncoderPosition();
-
-    // did we move arounde?
-    if (encoder_position > new_position) {
-
-        gfx->setCursor(50, 50);
-        gfx->setTextColor(WHITE,BLACK);
-        if (new_position < 0) new_position = 0;
-
-        if (new_position<10 && new_position > -1) gfx->print( "0");
-        gfx->println( new_position);
-        // int16_t deg = map(new_position,0,200,0,359) ;
-        // int16_t diff = abs(deg - oldDeg);
-        // gfx->startWrite();
-
-        // gfx->fillArc(center,center,center - markLen, center, deg,deg + diff,WHITE);
-
-        // gfx->fillArc(center,center,center - markLen, center, oldDeg,oldDeg +diff, BLACK);
-        // oldDeg = deg;
-        // encoder_position = new_position;      // and save for next round
-        // gfx->endWrite();
-
-    } else if (encoder_position < new_position) {
-        gfx->setCursor(50, 50);
-        gfx->setTextColor(WHITE,BLACK);
-                if (new_position < 0) new_position = 0;
-
-        if (new_position<10 && new_position > -1) gfx->print( "0");
-
-         gfx->println( new_position);
-    //     int16_t deg = map(new_position,0,200,0,359) ;
-    //     int16_t diff = abs(deg - oldDeg);
-    //     gfx->startWrite();
-
-    //    gfx->fillArc(center,center,center - markLen, center, oldDeg- diff,oldDeg ,BLACK);
-    //     gfx->fillArc(center,center,center - markLen, center,deg - diff,deg ,WHITE);
-    //             gfx->endWrite();
-
-    //     oldDeg = deg;
-    //     encoder_position = new_position; 
-    }
+    
 
 }
