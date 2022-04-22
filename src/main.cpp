@@ -2,18 +2,35 @@
 
 #include "encoder.h"
 #include "sprite.h"
-#include <AsyncTimer.h>
+#include "imu.h"
+
+#define MAXTIME 60000 // in ms
+
+#define BUZZ 6
+#define D3 147
+#define E3 165
 
 
-#define degreesToRadians(angleDegrees) (angleDegrees * M_PI / 180.0)
-#define MAXTIME 600 // in ms
-AsyncTimer t;
-
+unsigned long everySecond;
+unsigned long everyTenth;
+unsigned long startMillis;
 
 bool isRunning = false;
+bool isEnd = false;
+
 static uint32_t ostart,oend;
 bool isPressed = false;
 static float timer = 0;
+
+void reset(bool end = false) {
+    ssw.setEncoderPosition(0);
+    gfx->fillRect(50,center,7000,70,BACKGROUND);
+    timer = 0;
+    gfx->fillArc(center,center,100,102,0,360,BACKGROUND);
+    isRunning = false;
+    isEnd = end;
+    noTone(BUZZ);    
+}
 
 void setcircle(int32_t angle, bool reverse = false) {
     float start, end;
@@ -24,23 +41,22 @@ void setcircle(int32_t angle, bool reverse = false) {
         start = angle + 177.0;
         end = angle + 181.0;
     } else {
-        color= WHITE;
+        color= FORGROUND;
 
         start = angle + 179.0 ;
         end = angle + 184.0;
     }
   
-    gfx->fillArc(center,center,100,102,ostart,oend,color);
+    gfx->fillArc(center,center,100,105,ostart,oend,color);
 
     ostart = start;
     oend = end;
 }
 
 void renderClock(int16_t ms) {
-    int16_t hh, mm, ss;
+    int16_t  ss;
 
-    ss = ms / 10;
-    mm = ms *100/ 60;
+    ss = ms / 1000;
     gfx->setCursor(50, center);
     gfx->setTextSize(4);
     if (ss < 10)  gfx->print("0");
@@ -49,6 +65,8 @@ void renderClock(int16_t ms) {
 }
 void setup(void)
 {
+    pinMode(BUZZ, OUTPUT);
+    imu_init();
     ss_init ();
     gfx->begin();
     gfx->fillScreen(BACKGROUND);
@@ -69,30 +87,36 @@ void setup(void)
     {
         center = h / 2;
     }
-    hHandLen = center * 3 / 8;
-    mHandLen = center * 2 / 3;
-    sHandLen = center * 5 / 6;
-    markLen = sHandLen / 6;
-
-    // Draw 60 clock marks
-    draw_round_clock_mark(
-    // draw_square_clock_mark(
-        center - markLen, center,
-        center - (markLen * 2 / 3), center,
-        center - (markLen / 2), center);
-
+   
+    gfx->setTextColor(FORGROUND,BACKGROUND);
     
-    gfx->setTextColor(WHITE,BACKGROUND);
-    
+    everySecond = millis();
+    everyTenth = millis();
+}
+uint8_t charloop = 0;
+
+void idleChar(uint8_t cycle) {
+    gfx->startWrite();
+    switch (cycle) {
+        case 1: 
+            drawBitmapScale(100,100 , character2, CH_W, CH_H, BACKGROUND,4);
+            drawBitmapScale(100,100 , character, CH_W, CH_H, FORGROUND,4);
+            break;
+        default: 
+            drawBitmapScale(100,100 , character, CH_W, CH_H, BACKGROUND,4);
+            drawBitmapScale(100,100 , character2, CH_W, CH_H, FORGROUND,4);
+            break;
+    }
+    gfx->endWrite();
 
 }
 
+
 void loop()
 {
-    t.handle();
-    //run every sec
-    t.setInterval([]() {
-        
+    unsigned long runMillis= millis();
+    if(runMillis >= everySecond) {
+        everySecond += 500;
         if (isRunning) {
             //run timer
             gfx->startWrite();
@@ -101,14 +125,19 @@ void loop()
             gfx->endWrite();
 
         }
-          
-    }, 1000);
+        
+        if (charloop > 1) charloop = 0;
+        idleChar(charloop);
+        charloop++;
 
-    
-    //run every ms
-    t.setInterval([]() {
-        if (isRunning) {
-            timer--;
+
+    }
+    if(runMillis >= everyTenth) {
+        everyTenth += 100;
+
+          if (isRunning) {
+            timer = timer - 100;
+
             float timems = map(timer,0,MAXTIME,0,360);
             gfx->startWrite();
 
@@ -117,14 +146,41 @@ void loop()
             gfx->endWrite();
 
             if (timer <= 0) {
-                ssw.setEncoderPosition(0);
-                gfx->fillRect(50,center,7000,70,BACKGROUND);
-                timer = 0;
-                gfx->fillArc(center,center,100,102,0,360,BACKGROUND);
-                isRunning = false;
+                reset(true);
             }
 
-        } else {
+        } else if (isEnd && !isRunning) {
+            gfx->setCursor(50, center);
+            gfx->setTextSize(4);
+          
+           
+            switch (everyTenth % 900) {
+                case (100): 
+                    tone(BUZZ, D3);                     //play the frequency for c
+                     gfx->print("stand");
+                break;
+                case (500):
+                    tone(BUZZ, E3);                     //play the frequency for c
+                    gfx->print("     up!");
+
+                break;
+                default: 
+                    noTone(BUZZ);     
+
+            }
+            sensors_event_t accel;
+            sensors_event_t gyro;
+            sensors_event_t mag;
+            sensors_event_t temp;
+            icm.getEvent(&accel, &gyro, &temp, &mag);
+            // reset if move
+            if  (abs(gyro.gyro.y) > 0.7) {
+                 reset();
+            }
+
+
+        } 
+        else {
             int32_t new_position = ssw.getEncoderPosition();
 
             if (encoder_position > new_position) {
@@ -165,26 +221,26 @@ void loop()
         
      
 
-
-    }, 100);
+     }
 
     //reset?
     if (! ssw.digitalRead(SS_SWITCH) && !isPressed) {
         //start if not running
-        if (!isRunning) {
+        if (!isRunning && !isEnd) {
             if (encoder_position != 0) {
-               
+                startMillis = runMillis;
                 timer = map(-encoder_position,0,360,0,MAXTIME);
                 isRunning = true;
+                isEnd = false;
             }
+
+            
            
-        } else {
+        } else if (isRunning || isEnd) {
             // else reset timer
-            ssw.setEncoderPosition(0);
-            gfx->fillRect(50,center,7000,70,BACKGROUND);
-            timer = 0;
-            gfx->fillArc(center,center,100,102,0,360,BACKGROUND);
-            isRunning = false;
+            reset();
+
+
         }
         isPressed = true;
 

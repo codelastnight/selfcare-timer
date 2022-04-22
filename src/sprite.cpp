@@ -7,7 +7,3 @@
 
 //virtual screen is 120x120 pixels
 
-
-void renderChar() {
-    
-}
